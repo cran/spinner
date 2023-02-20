@@ -1,0 +1,8 @@
+28ca997874790b85b56f9d6126fdf50c *DESCRIPTION
+4a1316316c96471ff852a46f3a67edee *NAMESPACE
+17b3ce295153bd416fcad28ac3740d00 *NEWS.md
+81d5e7f1998cd5f78e9eb5559f2f0b25 *R/main.R
+a57f284a91dae1fe00ea8c07fa039ba8 *R/spinner.R
+3df86ca07ff62b233a92f18bacc0b789 *man/spinner.Rd
+c1385bf034bd833fb616eb0035cff7ba *tests/testthat.R
+867e391fe7fdee1a2d61b988330ba83e *tests/testthat/test.R
