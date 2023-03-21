@@ -1,8 +1,10 @@
-28ca997874790b85b56f9d6126fdf50c *DESCRIPTION
-4a1316316c96471ff852a46f3a67edee *NAMESPACE
-17b3ce295153bd416fcad28ac3740d00 *NEWS.md
-81d5e7f1998cd5f78e9eb5559f2f0b25 *R/main.R
-a57f284a91dae1fe00ea8c07fa039ba8 *R/spinner.R
-3df86ca07ff62b233a92f18bacc0b789 *man/spinner.Rd
+46ba11ab7ddee23ffd84d86d88c59f64 *DESCRIPTION
+0a23d697d9fec6831638132928896633 *NAMESPACE
+d2a9e792b027725862d781d0c65baf94 *NEWS.md
+30f8bc8dba8f827d593c3298653c369d *R/main1.R
+1cf53261c4362a72e9fb38139c895e6f *R/main2.R
+840fa0b9e62e0204978e4b5061798309 *R/spinner.R
+ebaf41440c34760fe841299a72b36fd3 *man/spinner.Rd
+572577b17032212d8c85228ef518c23b *man/spinner_random_search.Rd
 c1385bf034bd833fb616eb0035cff7ba *tests/testthat.R
-867e391fe7fdee1a2d61b988330ba83e *tests/testthat/test.R
+ffcac4e84ee831bc4762a42bf3bd5481 *tests/testthat/test.R

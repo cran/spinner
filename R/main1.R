@@ -1,11 +1,13 @@
 #' spinner
 #'
-#' @param graph A graph in igraph format
+#' @description Spinner is an implementation of Graph Nets based on torch. Graph Nets are a family of neural network architectures designed for processing graphs and other structured data. They consist of a set of message-passing operations, which propagate information between nodes and edges in the graph, and a set of update functions, which compute new node and edge features based on the received messages.
+#'
+#' @param graph A graph in igraph format (without name index for nodes).
 #' @param target String. Predicted dimension. Options are: "node", "edge".
 #' @param node_labels String. Character vector with labels of node features. In case of absent features, default to NA (automatic node embedding with selected method).
 #' @param edge_labels String. Character vector with labels of edge features. In case of absent features, default to NA (automatic edge embedding with selected method).
 #' @param context_labels String. Character vector with labels of context features. In case of absent features, default to NA (automatic context embedding with selected method).
-#' @param direction String. Direction of message propagation. Options are: "undirected", "from_head", "to_tail". Default to: "undirected".
+#' @param direction String. Direction of message propagation. Options are: "from_head", "from_tail". Default to: "from_head".
 #' @param sampling Positive numeric or integer. In case of huge graph, you can opt for a subgraph. Sampling dimension expressed in absolute value or percentage. Default: NA (no sampling).
 #' @param threshold Numeric. Below this threshold (calculated on edge density), sampling is done on edges, otherwise on nodes. Default: 0.01.
 #' @param method String. Embedding method in case of absent features. Options are: "null" (zeroed tensor), "laplacian", "adjacency". Default: "null".
@@ -15,9 +17,9 @@
 #' @param update_order String. The order of message passing through nodes (n), edges (e) and context (c) for updating information. Available options are: "enc", "nec", "cen", "ecn", "nce", "cne". Default: "enc".
 #' @param n_layers Integer. Number of graph net variant layers. Default: 1.
 #' @param skip_shortcut Logical. Flag for applying skip shortcut after the graph net variant layers. Default: FALSE.
-#' @param dnn_form Integer. Integer vector with size of each forward net layer. Default: 32 (a single layer with 32 nodes).
-#' @param dnn_activ String. Character vector with activation for each forward net layer. Available options are: "linear", "relu", "mish", "leaky_relu", "celu", "elu", "gelu", "selu", "bent", "softmax", "softmin", "softsign", "sigmoid", "tanh". Default: "relu".
-#' @param dnn_drop Numeric. Numeric vector with drop out for each forward net layer. Default: 0.3.
+#' @param forward_layer Integer. Single integer vector with size for forward net layer. Default: 32 (layers with 32 nodes).
+#' @param forward_activation String. Single character vector with activation for forward net layer. Available options are: "linear", "relu", "mish", "leaky_relu", "celu", "elu", "gelu", "selu", "bent", "softmax", "softmin", "softsign", "sigmoid", "tanh". Default: "relu".
+#' @param forward_drop Numeric. Single numeric vector with drop out for forward net layer. Default: 0.3.
 #' @param mode String. Aggregation method for message passing. Options are: "sum", "mean", "max". Default: "sum".
 #' @param optimization String. Optimization method. Options are: "adadelta", "adagrad", "rmsprop", "rprop", "sgd", "asgd", "adam".
 #' @param epochs Positive integer. Default: 100.
@@ -37,7 +39,7 @@
 #'\item graph: analyzed graph is returned (original graph or sampled subgraph).
 #'\item model_description: general model description.
 #'\item model_summary: summary for each torch module.
-#'\item pred_fun: function to predict on new graph data.
+#'\item pred_fun: function to predict on new graph data (you need to add new nodes/edges to the original graph respecting the directionality).
 #'\item cv_error: cross-validation error for each repetition and each fold. The error is a weighted normalized loss based on mse and binary cross-entropy (depending on the nature of each specific feature).
 #'\item summary_errors: final summary of error during cross-validation and testing.
 #'\item history: plot with loss for final training and testing.
@@ -47,25 +49,24 @@
 #' @export
 #'
 #' @import torch
-#' @importFrom purrr map map2 pmap keep discard map_lgl map_dbl map_if flatten
+#' @importFrom purrr map map2 pmap keep discard map_lgl map_dbl map_if flatten map_dfr map2_dbl
 #' @import ggplot2
 #' @import tictoc
 #' @importFrom readr parse_number
 #' @importFrom lubridate seconds_to_period
 #' @importFrom ggthemes theme_clean
-#' @import igraph
+#' @importFrom igraph get.vertex.attribute get.edge.attribute graph.attributes diameter remove.vertex.attribute vcount ecount as_edgelist line.graph subgraph set_vertex_attr subgraph.edges set_edge_attr random.graph.game embed_adjacency_matrix embed_laplacian_matrix edge_density degree difference is.igraph add.vertices add.edges
+#' @import abind
 #' @importFrom rlist list.insert
 #' @importFrom fastDummies dummy_columns
 #' @importFrom entropy entropy
 #' @importFrom utils tail
-#' @importFrom stats loess predict quantile
-#'
-#####ecount vcount is.directed as.directed as.undirected get.vertex.attribute get.edge.attribute graph.attributes as_edgelist random.graph.game difference is.igraph random.graph.game line.graph embed_laplacian_matrix embed_adjacency_matrix subgraph subgraph.edges edge_density degree V E
+#' @importFrom stats loess predict quantile sd
 #'
 #'
-spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_labels = NA, direction = "undirected",
+spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_labels = NA, direction = "from_head",
                         sampling = NA, threshold = 0.01, method = "null", node_embedding_size = 5, edge_embedding_size = 5, context_embedding_size = 5,
-                        update_order = "enc", n_layers = 3, skip_shortcut = FALSE, dnn_form = 32, dnn_activ = "relu", dnn_drop = 0.3, mode = "sum",
+                        update_order = "enc", n_layers = 3, skip_shortcut = FALSE, forward_layer = 32, forward_activation = "relu", forward_drop = 0.3, mode = "sum",
                         optimization = "adam", epochs = 100, lr = 0.01, patience = 30, weight_decay = 0.001,
                         reps = 1, folds = 3, holdout = 0.2, verbose = TRUE, seed = 42)
 {
@@ -76,34 +77,50 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
 
   ###INPUT CHECK
   target <- match.arg(arg = target, choices = c("node", "edge"), several.ok = FALSE)
-  direction <- match.arg(arg = direction, choices = c("undirected", "from_head", "to_tail"), several.ok = FALSE)
+  direction <- match.arg(arg = direction, choices = c("from_head", "from_tail"), several.ok = FALSE)
   method <- match.arg(arg = method, choices = c("null", "laplacian", "adjacency"), several.ok = FALSE)
-  dnn_activ <- match.arg(arg = dnn_activ, choices = c("linear", "relu", "mish", "leaky_relu", "celu", "elu", "gelu", "selu", "bent", "softmax", "softmin", "softsign", "sigmoid", "tanh"), several.ok = TRUE)
+  forward_activation <- match.arg(arg = forward_activation, choices = c("linear", "relu", "mish", "leaky_relu", "celu", "elu", "gelu", "selu", "bent", "softmax", "softmin", "softsign", "sigmoid", "tanh"), several.ok = TRUE)
   mode <- match.arg(arg = mode, choices = c("sum", "max", "mean"), several.ok = FALSE)
   optimization <- match.arg(arg = optimization, choices = c("adam", "adagrad", "adadelta", "sgd", "asgd", "rprop", "rmsprop"), several.ok = FALSE)
   update_order <- match.arg(arg = update_order, choices = c("enc", "nec", "cen", "ecn", "nce", "cne"), several.ok = FALSE)
 
-  ####PREPARATION
-  if(is.directed(graph) & direction == "undirected"){graph <- as.undirected(graph, mode = "collapse", edge.attr.comb = "random")}
-  if(!is.directed(graph) & direction != "undirected"){graph <- as.directed(graph, mode = "mutual")}
+  if(length(forward_layer) > 1){forward_layer <- forward_layer[1]}
+  if(length(forward_activation) > 1){forward_activation <- forward_activation[1]}
+  if(length(forward_drop) > 1){forward_drop <- forward_drop[1]}
 
+  ####PREPARATION
+  #if(is.directed(graph) & direction == "undirected"){graph <- as.undirected(graph, mode = "collapse", edge.attr.comb = "random")}
+  #if(!is.directed(graph) & direction != "undirected"){graph <- as.directed(graph, mode = "mutual")}
+  if(!is.igraph(graph)){stop("graph required in igraph format")}
+  if(!is.null(get.vertex.attribute(graph, "name"))){graph <- remove.vertex.attribute(graph, "name")}
   if(is.numeric(sampling) & sampling > 0 & (sampling < vcount(graph) | sampling < ecount(graph))){graph <- graph_sampling(graph, samp = sampling, threshold, seed)}
 
   n_nodes <- vcount(graph)
   n_edges <- ecount(graph)
 
+  if(node_embedding_size < 2){node_embedding_size <- 2; message("setting node embedding size to minimum (2)")}
   node_schema <- feature_analyzer(graph, labels = node_labels, type = "node", method, node_embedding_size, mode)
   node_features <- node_schema$features
   node_dims <- dim(node_features)
   node_input_dim <- node_dims[2]
   node_idx <- 1:n_nodes
 
+  node_norm_index <- unlist(map2(node_schema$group_init[node_schema$num_types], node_schema$group_end[node_schema$num_types], ~ .x:.y))
+  node_norm_model <- normalizer(node_features, node_norm_index)
+  node_features <- node_norm_model$norm_features
+
+  if(edge_embedding_size < 2){edge_embedding_size <- 2; message("setting edge embedding size to minimum (2)")}
   edge_schema <- feature_analyzer(graph, labels = edge_labels, type = "edge", method, edge_embedding_size, mode)
   edge_features <- edge_schema$features
   edge_dims <- dim(edge_features)
   edge_input_dim <- edge_dims[2]
   edge_idx <- 1:edge_dims[1]
 
+  edge_norm_index <- unlist(map2(edge_schema$group_init[edge_schema$num_types], edge_schema$group_end[edge_schema$num_types], ~ .x:.y))
+  edge_norm_model <- normalizer(edge_features, edge_norm_index)
+  edge_features <- edge_norm_model$norm_features
+
+  if(context_embedding_size < 2){context_embedding_size <- 2; message("setting context embedding size to minimum (2)")}
   context_schema <- feature_analyzer(graph, labels = context_labels, type = "context", method, context_embedding_size, mode)
   context_features <- context_schema$features
   context_dims <- dim(context_features)
@@ -113,6 +130,7 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
   edge_list <- as_edgelist(graph)
 
   target_schema <- switch(target, "node" = node_schema, "edge" = edge_schema, "context" = context_schema)
+  target_norm <- switch(target, "node" = node_norm_model, "edge" = edge_norm_model)
 
   node_feat_names <- colnames(node_features)
   edge_feat_names <- colnames(edge_features)
@@ -136,15 +154,15 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
 
   set.seed(seed)
   cv_index <- replicate(reps, sample(folds, node_train_length, replace = TRUE), simplify = FALSE)
-  cv_index <- purrr::flatten(purrr::map(cv_index, ~ mapply(function(fold) .x == fold, fold = 1:folds, SIMPLIFY = FALSE)))
+  cv_index <- flatten(purrr::map(cv_index, ~ mapply(function(fold) .x == fold, fold = 1:folds, SIMPLIFY = FALSE)))
   train_idx <- map(cv_index, ~ node_train_idx[!.x])
   val_idx <- map(cv_index, ~ node_train_idx[.x])
 
   torch_manual_seed(seed)
-  cv_models <- replicate(reps * folds, nn_graph_model(target, mode, n_layers, node_input_dim, edge_input_dim, context_input_dim, dnn_form, dnn_activ, dnn_drop, target_schema, dev), simplify = FALSE)
+  cv_models <- replicate(reps * folds, nn_graph_model(target, mode, n_layers, node_input_dim, edge_input_dim, context_input_dim, forward_layer, forward_activation, forward_drop, target_schema, dev), simplify = FALSE)
   cross_validation <- pmap(list(cv_models, train_idx, val_idx), ~ training_function(model = ..1, direction, node_features, edge_features, edge_list, ..2, ..3, context_features, target, target_schema, optimization, weight_decay, lr, epochs, patience, verbose, dev, update_order, skip_shortcut))
 
-  final <- nn_graph_model(target, mode, n_layers, node_input_dim, edge_input_dim, context_input_dim, dnn_form, dnn_activ, dnn_drop, target_schema, dev)
+  final <- nn_graph_model(target, mode, n_layers, node_input_dim, edge_input_dim, context_input_dim, forward_layer, forward_activation, forward_drop, target_schema, dev)
   final_training <- training_function(model = final, direction, node_features, edge_features, edge_list, node_train_idx, node_test_idx, context_features, target, target_schema, optimization, weight_decay, lr, epochs, patience, verbose, dev, update_order, skip_shortcut)
 
   train_errors <- purrr::map(cross_validation, ~ matrix(tail(.x$train_history, 1), 1, 1))
@@ -157,8 +175,9 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
   cv_errors <- cv_errors[, c(2, 1, 3, 4)]
 
   model <- final_training$model
+  train_errors <- final_training$train_history
   test_errors <- final_training$val_history
-  summary_errors <- c(colMeans(cv_errors[, c(3, 4)]), test = tail(test_errors, 1))
+  summary_errors <- c(train = tail(train_errors, 1), validation = colMeans(cv_errors[, 4, drop = FALSE]), test = tail(test_errors, 1))
 
   train_history <- final_training$train_history
   val_history <- final_training$val_history
@@ -188,8 +207,18 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
   ###PREDICTION
   pred_fun <- function(new_graph)
   {
-    if(is.directed(new_graph) & direction == "undirected"){new_graph <- as.undirected(new_graph, mode = "collapse", edge.attr.comb = "random")}
-    if(!is.directed(new_graph) & direction != "undirected"){new_graph <- as.directed(new_graph, mode = "mutual")}
+    #if(is.directed(new_graph) & direction == "undirected"){new_graph <- as.undirected(new_graph, mode = "collapse", edge.attr.comb = "random")}
+    #if(!is.directed(new_graph) & direction != "undirected"){new_graph <- as.directed(new_graph, mode = "mutual")}
+    if(!is.igraph(new_graph)){stop("graph required in igraph format")}
+
+    feat_names <- target_schema$feat_names
+    group_init <- target_schema$group_init
+    group_end <- target_schema$group_end
+    target_names <- map2(group_init, group_end, ~ feat_names[.x:.y])
+    num_types <- target_schema$num_types
+    feat_sizes <- target_schema$feat_sizes
+
+    if(!is.null(get.vertex.attribute(new_graph, "name"))){new_graph <- remove.vertex.attribute(new_graph, "name")}
 
     delta_graph <- difference(new_graph, graph)
     previous_count <- vcount(graph)
@@ -204,7 +233,13 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
     if(n_new_nodes > 0){
       if(same_node_attributes){selected_node_labels <- node_labels} else {selected_node_labels <- NA}
       delta_node_schema <- feature_analyzer(delta_graph, labels = selected_node_labels, type = "node", method, node_input_dim, mode)
-      new_node_features <- tail(delta_node_schema$features, n_new_nodes)###NEED TO INCLUDE ONLY THE TAIL BECAUSE OF IGRAPH BEHAVIOUR ON DIFFERENCE GRAPH
+
+      ###NORMALIZATION
+      node_means <- node_norm_model$num_means
+      node_scales <- node_norm_model$num_scales
+      new_node_features <- mapply(function(i) (delta_node_schema$features[,i] - node_means[i])/node_scales[i], i = 1:ncol(delta_node_schema$features))
+
+      new_node_features <- tail(new_node_features, n_new_nodes)###BECAUSE OF IGRAPH ODD WAY OF MANAGING DIFFERENCE OPERATION AT NODE LEVEL
       updated_node_features <- smart_rbind(node_features, new_node_features)
     }
     else {updated_node_features <- node_features}
@@ -213,6 +248,12 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
       if(same_edge_attributes){selected_edge_labels <- edge_labels} else {selected_edge_labels <- NA}
       delta_edge_schema <- feature_analyzer(delta_graph, labels = selected_edge_labels, type = "edge", method, edge_input_dim, mode)
       new_edge_features <- delta_edge_schema$features
+
+      ###NORMALIZATION
+      edge_means <- edge_norm_model$num_means
+      edge_scales <- edge_norm_model$num_scales
+      new_edge_features <- mapply(function(i) (delta_edge_schema$features[,i] - edge_means[i])/edge_scales[i], i = 1:ncol(delta_edge_schema$features))
+
       updated_edge_features <- smart_rbind(edge_features, new_edge_features)
     }
     else {updated_edge_features <- edge_features}
@@ -224,14 +265,32 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
     delta_context_schema <- feature_analyzer(delta_graph, labels = selected_context_labels, type = "context", method, context_input_dim, mode)
     updated_context_features <- delta_context_schema$features
 
-    dir_list <- switch(direction, "undirected" = list(updated_edgelist[,1], updated_edgelist[,2]), "from_head" = list(updated_edgelist[,1], NULL), "to_tail" = list(NULL, updated_edgelist[,2]))
+    dir_list <- switch(direction, "undirected" = list(updated_edgelist[,1], updated_edgelist[,2]), "from_head" = list(updated_edgelist[,1], NULL), "from_tail" = list(NULL, updated_edgelist[,2]))
     pred <- model(updated_node_features, updated_edge_features, updated_context_features, from_node = dir_list[[1]], to_node = dir_list[[2]], update_order, skip_shortcut)
     if((target == "node" & n_new_nodes > 0) | (target == "edge" & n_new_edges > 0)){pred <- map(pred, ~ tail(.x, switch(target, "node" = n_new_nodes, "edge" = n_new_edges)))}
 
-    feat_names <- target_schema$feat_names
-    group_init <- target_schema$group_init
-    group_end <- target_schema$group_end
-    target_names <- map2(group_init, group_end, ~ feat_names[.x:.y])
+    ###RESCALING
+    if(any(num_types) && !is.na(target_norm$num_scales))
+    {
+      num_means <- target_norm$num_means
+      num_scales <- target_norm$num_scales
+
+      if(length(feat_sizes) > 1)
+      {
+      group_index <- 1:length(feat_sizes[num_types])
+      group_means <- split(num_means, unlist(map2(group_index, feat_sizes[num_types], ~ rep(.x, each = .y))))
+      group_scales <- split(num_scales, unlist(map2(group_index, feat_sizes[num_types], ~ rep(.x, each = .y))))
+      num_pred <- pmap(list(pred[num_types], group_means, group_scales), ~ invert_scale(..1, ..2, ..3, dev))
+      pred[num_types] <- num_pred
+      pred <- unlist(pred)###NEED TO FLATTEN THE INTERMEDIATE LIST LAYER INTRODUCED BY PMAP, BUT FLATTEN DON'T WORK WITH TORCH TENSORS
+      }
+
+      if(length(feat_sizes)==1)
+      {
+      pred <- invert_scale(pred, num_means, num_scales, dev)
+      pred <- list(pred)
+      }
+    }
 
     pred <- map2(pred, target_names, ~ {x <- as.matrix(.x$to(device = "cpu")); colnames(x) <- .y; return(x)})
 
@@ -531,7 +590,6 @@ nn_pooling_from_edges_to_context_layer <- nn_module(
   forward = function(edge_features, context_features, mode)
   {
     transformed_edge_features <- self$linear_transf(edge_features)
-    #concat_tensor <- torch_cat(list(transformed_edge_features, context_features), dim = 1)
 
     if(mode == "sum"){pooled_context <- torch_sum(transformed_edge_features, 1, keepdim = TRUE)}
     if(mode == "max"){pooled_context <- torch_max(transformed_edge_features, 1, keepdim = TRUE)[[1]]}
@@ -835,7 +893,6 @@ training_function <- function(model, direction, node_features, edge_features, ed
   if(optimization == "rmsprop"){optimizer <- optim_rmsprop(model$parameters, lr = lr, alpha = 0.99, eps = 1e-08, weight_decay = weight_decay , momentum = 0, centered = FALSE)}
   if(optimization == "rprop"){optimizer <- optim_rprop(model$parameters, lr = lr, etas = c(0.5, 1.2), step_sizes = c(1e-06, 50))}
   if(optimization == "sgd"){optimizer <- optim_sgd(model$parameters, lr = lr, momentum = 0, dampening = 0, weight_decay = weight_decay , nesterov = FALSE)}
-  ###if(optimization == "lbfgs"){optimizer <- optim_lbfgs(model$parameters, lr = lr, max_iter = 20, max_eval = NULL, tolerance_grad = 1e-07, tolerance_change = 1e-09, history_size = 100, line_search_fn = NULL)}
   if(optimization == "asgd"){optimizer <- optim_asgd(model$parameters, lr = lr, lambda = 1e-04, alpha = 0.75, t0 = 1e+06, weight_decay = weight_decay )}
   if(optimization == "adam"){optimizer <- optim_adam(model$parameters, lr = lr, betas = c(0.9, 0.999), eps = 1e-08, weight_decay = weight_decay , amsgrad = FALSE)}
 
@@ -861,8 +918,8 @@ training_function <- function(model, direction, node_features, edge_features, ed
   delta_node_index <- !(node_val_idx %in% node_train_idx)
   delta_edge_index <- !(edge_val_idx %in% edge_train_idx)
 
-  train_dir_list <- switch(direction, "undirected" = list(edgelist_train[,1], edgelist_train[,2]), "from_head" = list(edgelist_train[,1], NULL), "to_tail" = list(NULL, edgelist_train[,2]))
-  val_dir_list <- switch(direction, "undirected" = list(edgelist_val[,1], edgelist_val[,2]), "from_head" = list(edgelist_val[,1], NULL), "to_tail" = list(NULL, edgelist_val[,2]))
+  train_dir_list <- switch(direction, "undirected" = list(edgelist_train[,1], edgelist_train[,2]), "from_head" = list(edgelist_train[,1], NULL), "from_tail" = list(NULL, edgelist_train[,2]))
+  val_dir_list <- switch(direction, "undirected" = list(edgelist_val[,1], edgelist_val[,2]), "from_head" = list(edgelist_val[,1], NULL), "from_tail" = list(NULL, edgelist_val[,2]))
 
   if(is.numeric(nrow(node_train)) && nrow(node_train) < 2){stop("not enough data for training")}
   if(is.numeric(nrow(edge_train)) && nrow(edge_train) < 2){stop("not enough data for training")}
@@ -1001,7 +1058,7 @@ feature_analyzer <- function(graph, labels, type, method, embedding_size, mode)
 
     na_index <- map_lgl(features, ~ all(is.na(.x)))
     feat_sizes <- map_dbl(features, ~ dim(.x)[2])
-    features <- pmap(list(na_index, features, feat_sizes), ~ {if(..1){matrix(0, n_rows, ..3)} else {..2}})
+    features <- pmap(list(na_index, features, feat_sizes), ~ {if(..1){as.data.frame(matrix(0, n_rows, ..3))} else {..2}})
 
     lgl_types <- map_lgl(features, ~ lgl_set(.x))
     fct_types <- map_lgl(features, ~ fct_set(.x))
@@ -1013,6 +1070,7 @@ feature_analyzer <- function(graph, labels, type, method, embedding_size, mode)
     features <- map(features, ~ fast_naimp(.x))
     features <- map2(features, labels, ~ {if(ncol(.x)==1){colnames(.x) <- paste0(.y); return(.x)} else {colnames(.x) <- paste0(.y,"_feat", 1:ncol(.x)); return(.x)}})
     features <- map_if(features, fct_types, ~ dummy_columns(.x, remove_selected_columns = TRUE))
+
     group_dim <- map_dbl(features, ~ dim(.x)[2])
     features <- as.data.frame(features)
     features <- as.matrix(features)
@@ -1027,9 +1085,25 @@ feature_analyzer <- function(graph, labels, type, method, embedding_size, mode)
   {
     if(type == "edge"){graph <- line.graph(graph)}
 
+    adjacency_embedding <- function(graph, embedding_size, n_rows, mode)
+    {
+      embed_model <- tryCatch(embed_adjacency_matrix(graph, no = embedding_size, weights = NULL), error = function(e) NA)
+      if(is.na(embed_model[1])){feat_model <- matrix(0, n_rows, embedding_size); message("embedding error, using null")}
+      if(!is.na(embed_model[1])){if(is.null(embed_model$Y)){feat_model <- embed_model$X} else {feat_model <- apply(abind(embed_model$X, embed_model$Y, along = 3), c(1, 2), function(x) switch(mode, "sum" = sum(x, na.rm = TRUE), "mean" = mean(x, na.rm = TRUE), "max" = max(x, na.rm = TRUE)))}}
+      return(feat_model)
+    }
+
+    laplacian_embedding <- function(graph, embedding_size, n_rows, mode)
+    {
+      embed_model <- tryCatch(embed_laplacian_matrix(graph, no = embedding_size, weights = NULL), error = function(e) NA)
+      if(is.na(embed_model[1])){feat_model <- matrix(0, n_rows, embedding_size); message("embedding error, using null")}
+      if(!is.na(embed_model[1])){if(is.null(embed_model$Y)){feat_model <- embed_model$X} else {feat_model <- apply(abind(embed_model$X, embed_model$Y, along = 3), c(1, 2), function(x) switch(mode, "sum" = sum(x, na.rm = TRUE), "mean" = mean(x, na.rm = TRUE), "max" = max(x, na.rm = TRUE)))}}
+      return(feat_model)
+    }
+
     if(method == "null"){features <- matrix(0, n_rows, embedding_size)}
-    if(method == "adjacency"){features <- embed_adjacency_matrix(graph, no = embedding_size, weights = NULL)$X}
-    if(method == "laplacian"){features <- embed_laplacian_matrix(graph, no = embedding_size, weights = NULL)$X}
+    if(method == "adjacency"){features <- adjacency_embedding(graph, embedding_size, n_rows, mode)}
+    if(method == "laplacian"){features <- laplacian_embedding(graph, embedding_size, n_rows, mode)}
     if(type == "context"){features <- matrix(apply(features, 2, function(x) switch(mode, "sum" = sum(x), "mean" = mean(x), "max" = max(x))), 1, embedding_size)}
 
     if(any(!is.finite(features))){stop("not finite embedding values")}
@@ -1041,7 +1115,7 @@ feature_analyzer <- function(graph, labels, type, method, embedding_size, mode)
     feat_sizes <- ncol(features)
     num_types <- TRUE
     fct_types <- FALSE
-  }
+   }
 
   outcome <- list(features = features, feat_names = feat_names, feat_sizes = feat_sizes, group_init = group_init, group_end = group_end, num_types = num_types, fct_types = fct_types)
 
@@ -1075,8 +1149,8 @@ weighted_normalized_loss <- function(pred, target, target_schema, dev)
   end <- target_schema$group_end
 
   weights <- vector("list", length(init))
-  if(any(fct_types)){weights[fct_types] <- map2(init[fct_types], end[fct_types],  ~ entropy(as_array(target[,.x:.y, drop = FALSE]$cpu()), method = "Laplace"))}
-  if(any(num_types)){weights[num_types] <- map2(init[num_types], end[num_types],  ~ entropy(as_array(target[,.x:.y, drop = FALSE]$cpu()), method = "Laplace"))}
+  if(any(fct_types)){weights[fct_types] <- map2(init[fct_types], end[fct_types],  ~ suppressWarnings(entropy(as_array(target[,.x:.y, drop = FALSE]$cpu()), method = "Laplace")))}
+  if(any(num_types)){weights[num_types] <- map2(init[num_types], end[num_types],  ~ suppressWarnings(entropy(as_array(target[,.x:.y, drop = FALSE]$cpu()), method = "Laplace")))}
   entropy_weights <- unlist(weights)
   if(all(!is.finite(entropy_weights))){entropy_weights[!is.finite(entropy_weights)] <- 1}
   if(any(!is.finite(entropy_weights))){entropy_weights[!is.finite(entropy_weights)] <- mean(entropy_weights[is.finite(entropy_weights)])}
@@ -1118,5 +1192,31 @@ graph_sampling <- function(graph, samp, threshold = 0.01, seed = 42)
   }
 
   return(sampled)
+}
+
+###
+normalizer <- function(features, num_index)
+{
+  order <- colnames(features)
+  num_feats <- order[num_index]
+  oth_feats <- setdiff(order, num_feats)
+  num_means <- apply(features[, num_feats, drop = FALSE], 2, function(x) mean(x, na.rm = TRUE))
+  num_scales <- apply(features[, num_feats, drop = FALSE], 2, function(x) sd(x, na.rm = TRUE))
+  if(all(num_scales == 0)){return(list(norm_features = features, num_means = NA, num_scales = NA))}
+  normalized <- apply(features[, num_feats, drop = FALSE], 2, function(x) (x - mean(x, na.rm = TRUE))/sd(x, na.rm = TRUE))
+  norm_features <- cbind(features[, oth_feats, drop = FALSE], normalized)
+  norm_features <- norm_features[, order, drop = FALSE]
+  out <- list(norm_features = norm_features, num_means = num_means, num_scales = num_scales)
+  return(out)
+}
+
+###
+invert_scale <- function(scaled, center, scale, dev)
+{
+  if(is.list(scaled)){scaled <- scaled[[1]]}
+  if("torch_tensor" %in% class(scaled)){scaled <- as.matrix(scaled$to(device = "cpu"))}
+  rescaled <- sapply(1:ncol(scaled), function(i) scaled[,i] * scale[i] + center[i])
+  rescaled <- torch_tensor(rescaled)$to(device = dev)
+  return(rescaled)
 }
 
