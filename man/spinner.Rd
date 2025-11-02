@@ -2,8 +2,8 @@
 % Please edit documentation in R/main1.R, R/spinner.R
 \docType{package}
 \name{spinner}
-\alias{spinner}
 \alias{spinner-package}
+\alias{spinner}
 \title{spinner}
 \usage{
 spinner(

@@ -73,7 +73,13 @@ spinner <- function(graph, target, node_labels = NA, edge_labels = NA, context_l
   tic.clearlog()
   tic("time")
 
-  if(cuda_is_available()){dev <- "cuda"} else {dev <- "cpu"}
+  ####if(cuda_is_available()){dev <- "cuda"} else {dev <- "cpu"}###
+  dev <- if (
+    identical(Sys.getenv("NOT_CRAN"), "true") &&
+    .Platform$OS.type != "windows" &&
+    nzchar(system.file(package = "torch")) &&
+    isTRUE(tryCatch(asNamespace("torch")$cuda_is_available(), error = function(e) FALSE))
+  ) "cuda" else "cpu"
 
   ###INPUT CHECK
   target <- match.arg(arg = target, choices = c("node", "edge"), several.ok = FALSE)
@@ -941,7 +947,7 @@ training_function <- function(model, direction, node_features, edge_features, ed
 
     dynamic_overfit[t] <- abs(val_history[t] - train_history[t])/abs(val_history[1] - train_history[1])
 
-    if(verbose==TRUE){if(t %% floor(epochs/10) == 0) {cat("epoch: ", t, "   Train loss: ", train_loss$item(), "   Val loss: ", val_loss$item(), "\n")}}
+    if(verbose==TRUE){cat("epoch: ", t, "   Train loss: ", train_loss$item(), "   Val loss: ", val_loss$item(), "\n")}
 
     optimizer$zero_grad()
     train_loss$backward()

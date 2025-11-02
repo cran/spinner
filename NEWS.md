@@ -10,3 +10,6 @@
 * Fixed the issue caused by the name indexing in igraph (symbolic name indexes are removed at the very beginning of processing)
 * Added a specific function for hyper-parameter tuning based on random search
 
+# spinner 1.1.1
+
+* Fixed testing issues

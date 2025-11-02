@@ -1,10 +1,10 @@
-46ba11ab7ddee23ffd84d86d88c59f64 *DESCRIPTION
+f7518a2a8665bfb498b42a1a0ee8e04d *DESCRIPTION
 0a23d697d9fec6831638132928896633 *NAMESPACE
-d2a9e792b027725862d781d0c65baf94 *NEWS.md
-30f8bc8dba8f827d593c3298653c369d *R/main1.R
+879d406e0ee5af63efa77c68bf9eb699 *NEWS.md
+3603efb017f1322151a2846be817d38e *R/main1.R
 1cf53261c4362a72e9fb38139c895e6f *R/main2.R
 840fa0b9e62e0204978e4b5061798309 *R/spinner.R
-ebaf41440c34760fe841299a72b36fd3 *man/spinner.Rd
+af25a920e77d16ed6aff583ad304e480 *man/spinner.Rd
 572577b17032212d8c85228ef518c23b *man/spinner_random_search.Rd
 c1385bf034bd833fb616eb0035cff7ba *tests/testthat.R
-ffcac4e84ee831bc4762a42bf3bd5481 *tests/testthat/test.R
+09f8ddd3da6508bad1eddd607d77ac48 *tests/testthat/test.R
